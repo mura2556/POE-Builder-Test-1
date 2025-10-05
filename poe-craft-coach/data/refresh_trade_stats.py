@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""Refresh trade static and stat payloads from the official Trade API."""
+from __future__ import annotations
+
 import json
 import sqlite3
 from datetime import datetime, UTC
@@ -59,8 +62,14 @@ def main() -> None:
     try:
         static_payload = fetch(session, STATIC_URL, 'trade_static', LOCAL_STATIC)
         stats_payload = fetch(session, STATS_URL, 'trade_stats', LOCAL_STATS)
-        conn.execute('INSERT INTO trade_static (payload, created_at) VALUES (?, ?)', (json.dumps(static_payload), datetime.now(UTC).isoformat()))
-        conn.execute('INSERT INTO trade_stats (payload, created_at) VALUES (?, ?)', (json.dumps(stats_payload), datetime.now(UTC).isoformat()))
+        conn.execute(
+            'INSERT INTO trade_static (payload, created_at) VALUES (?, ?)',
+            (json.dumps(static_payload), datetime.now(UTC).isoformat()),
+        )
+        conn.execute(
+            'INSERT INTO trade_stats (payload, created_at) VALUES (?, ?)',
+            (json.dumps(stats_payload), datetime.now(UTC).isoformat()),
+        )
         conn.commit()
     finally:
         conn.close()

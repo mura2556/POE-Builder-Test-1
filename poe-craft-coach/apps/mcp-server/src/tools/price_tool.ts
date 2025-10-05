@@ -9,22 +9,46 @@ const schema = z.object({
   source: z.enum(['ninja', 'watch', 'both']).optional()
 });
 
-const latestStmt = db.prepare(
-  `SELECT item, league, source, chaos_value, divine_value, payload, created_at
-   FROM prices
-   WHERE item = @item AND league = @league
-   AND (@source IS NULL OR source = @source OR @source = 'both')
-   ORDER BY datetime(created_at) DESC
-   LIMIT 1`
-);
+type SourceKey = 'ninja' | 'watch';
 
-const historyStmt = db.prepare(
-  `SELECT created_at, chaos_value, divine_value
-   FROM prices
-   WHERE item = @item AND league = @league
-   ORDER BY datetime(created_at) DESC
-   LIMIT 60`
-);
+const latestBySource = {
+  ninja: db.prepare(
+    `SELECT item, league, chaos_value, divine_value, payload, created_at
+     FROM prices_ninja
+     WHERE item = @item AND league = @league
+     ORDER BY datetime(created_at) DESC
+     LIMIT 1`
+  ),
+  watch: db.prepare(
+    `SELECT item, league, chaos_value, divine_value, payload, created_at
+     FROM prices_watch
+     WHERE item = @item AND league = @league
+     ORDER BY datetime(created_at) DESC
+     LIMIT 1`
+  )
+} as const;
+
+const historyBySource = {
+  ninja: db.prepare(
+    `SELECT chaos_value, divine_value, created_at
+     FROM prices_ninja
+     WHERE item = @item AND league = @league
+     ORDER BY datetime(created_at) DESC
+     LIMIT 60`
+  ),
+  watch: db.prepare(
+    `SELECT chaos_value, divine_value, created_at
+     FROM prices_watch
+     WHERE item = @item AND league = @league
+     ORDER BY datetime(created_at) DESC
+     LIMIT 60`
+  )
+} as const;
+
+const sourceLabel: Record<SourceKey, string> = {
+  ninja: 'poe.ninja',
+  watch: 'poe.watch'
+};
 
 export const priceTool = makeTool(
   'price_tool',
@@ -32,58 +56,85 @@ export const priceTool = makeTool(
   schema,
   async ({ itemOrCurrency, league, source }) => {
     const start = Date.now();
-    const sources = ['poe.ninja', 'poe.watch'];
-    try {
-      const latest = latestStmt.get({ item: itemOrCurrency, league, source: source ?? null }) as
-        | {
-            item: string;
-            league: string;
-            source: string;
-            chaos_value: number;
-            divine_value: number;
-            payload: string | null;
-            created_at: string;
-          }
-        | undefined;
+    const selectedSources: SourceKey[] = (() => {
+      if (!source || source === 'both') {
+        return ['ninja', 'watch'];
+      }
+      return [source];
+    })();
 
-      if (!latest) {
+    try {
+      const latestEntries = selectedSources
+        .map((key) => {
+          const row = latestBySource[key].get({ item: itemOrCurrency, league }) as
+            | {
+                item: string;
+                league: string;
+                chaos_value: number;
+                divine_value: number;
+                payload: string | null;
+                created_at: string;
+              }
+            | undefined;
+          if (!row) {
+            return undefined;
+          }
+          return { ...row, source: key as SourceKey };
+        })
+        .filter((entry): entry is { item: string; league: string; chaos_value: number; divine_value: number; payload: string | null; created_at: string; source: SourceKey } => Boolean(entry));
+
+      if (!latestEntries.length) {
         return withError('No pricing data found', {
           timingMs: Date.now() - start,
-          sources
+          sources: selectedSources.map((key) => sourceLabel[key])
         });
       }
 
-      const history = historyStmt.all({ item: itemOrCurrency, league }) as Array<{
-        created_at: string;
-        chaos_value: number;
-        divine_value: number;
-      }>;
+      const preferredOrder: SourceKey[] = source === 'watch' ? ['watch', 'ninja'] : ['ninja', 'watch'];
+      const latest = preferredOrder
+        .map((key) => latestEntries.find((entry) => entry.source === key))
+        .find((entry): entry is (typeof latestEntries)[number] => Boolean(entry))!;
 
-      const history7d = history.slice(0, 7).reverse();
-      const history30d = history.slice(0, 30).reverse();
+      const historyRecords = selectedSources.flatMap((key) => {
+        const rows = historyBySource[key].all({ item: itemOrCurrency, league }) as Array<{
+          chaos_value: number;
+          divine_value: number;
+          created_at: string;
+        }>;
+        return rows.map((row) => ({
+          chaos: row.chaos_value,
+          divine: row.divine_value,
+          asOf: row.created_at,
+          source: sourceLabel[key]
+        }));
+      });
 
-      return withMeta(
-        {
-          latest: {
-            chaos: latest.chaos_value,
-            divine: latest.divine_value,
-            source: latest.source,
-            asOf: latest.created_at,
-            payload: latest.payload ? JSON.parse(latest.payload) : undefined
-          },
-          history7d,
-          history30d,
-          sources
+      const sortedHistory = historyRecords
+        .sort((a, b) => new Date(a.asOf).getTime() - new Date(b.asOf).getTime());
+      const history7d = sortedHistory.slice(-7);
+      const history30d = sortedHistory.slice(-30);
+
+      const response = {
+        latest: {
+          chaos: latest.chaos_value,
+          divine: latest.divine_value,
+          source: sourceLabel[latest.source],
+          asOf: latest.created_at,
+          payload: latest.payload ? JSON.parse(latest.payload) : undefined
         },
-        {
-          timingMs: Date.now() - start,
-          sources
-        }
-      );
+        history7d,
+        history30d,
+        sources: Array.from(new Set(historyRecords.map((record) => record.source)))
+      };
+
+      return withMeta(response, {
+        timingMs: Date.now() - start,
+        sources: Array.from(new Set([sourceLabel[latest.source], ...historyRecords.map((record) => record.source)]))
+      });
     } catch (error) {
       return withError(error instanceof Error ? error.message : 'Unknown error', {
         timingMs: Date.now() - start,
-        sources
+        sources: selectedSources.map((key) => sourceLabel[key])
       });
     }
   }

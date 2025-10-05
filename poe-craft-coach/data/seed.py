@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
+"""Seed the local SQLite database with PoE metadata."""
+from __future__ import annotations
+
 import json
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,7 +23,7 @@ HEADERS = {
     'User-Agent': 'poe-craft-coach/0.1 (+https://github.com)'
 }
 
-POEDB_PAGES = [
+POEDB_PAGES: List[Tuple[str, str]] = [
     ('Prefix', 'https://poedb.tw/us/mod.php?type=Prefix'),
     ('Suffix', 'https://poedb.tw/us/mod.php?type=Suffix'),
 ]
@@ -44,6 +49,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_mods_base ON mods(base)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_mods_group ON mods(group_id)')
+
+    conn.execute(
+        '''CREATE TABLE IF NOT EXISTS mod_groups (
+               id TEXT PRIMARY KEY,
+               label TEXT,
+               type TEXT
+           )'''
+    )
+    conn.execute(
+        '''CREATE TABLE IF NOT EXISTS tags (
+               id TEXT PRIMARY KEY,
+               description TEXT
+           )'''
+    )
+    conn.execute(
+        '''CREATE TABLE IF NOT EXISTS bases (
+               id TEXT PRIMARY KEY,
+               name TEXT,
+               tags_json TEXT
+           )'''
+    )
 
     conn.execute(
         '''CREATE TABLE IF NOT EXISTS passive_tree (
@@ -80,8 +106,10 @@ def fetch_poedb_mods() -> list[dict]:
                         'full_text': text,
                         'domain': domain,
                         'generation_type': label.lower(),
-                        'tags': tags,
-                        'base': domain
+                        'tags': [tag.strip() for tag in tags if tag.strip()],
+                        'base': domain,
+                        'type': label.lower(),
+                        'group_id': None,
                     }
                 )
         except requests.RequestException:
@@ -114,7 +142,9 @@ def fetch_fallback_mods() -> list[dict]:
                 'group_id': payload.get('group'),
                 'spawn_weights_json': json.dumps(payload.get('spawn_weights', [])),
                 'tags_json': json.dumps(tags),
-                'base': payload.get('domain', '')
+                'tags': tags,
+                'base': payload.get('domain', ''),
+                'type': payload.get('type') or payload.get('generation_type', ''),
             }
         )
     return results
@@ -147,8 +177,9 @@ def fetch_trade_api_mods() -> list[dict]:
                     'group_id': entry.get('group'),
                     'spawn_weights_json': json.dumps(entry.get('generation_weights', [])),
                     'tags_json': json.dumps(entry.get('flags', [])),
+                    'tags': entry.get('flags', []),
                     'base': domain,
-                    'type': entry_type
+                    'type': entry_type,
                 }
             )
     return results
@@ -174,59 +205,113 @@ def seed_mods(conn: sqlite3.Connection) -> None:
                 'group_id': payload.get('group'),
                 'spawn_weights_json': json.dumps(payload.get('spawn_weights', [])),
                 'tags_json': json.dumps(payload.get('tags', [])),
+                'tags': payload.get('tags', []),
                 'base': payload.get('domain', ''),
-                'type': payload.get('type') or payload.get('generation_type', '')
+                'type': payload.get('type') or payload.get('generation_type', ''),
             }
             for mod_id, payload in data.items()
         ]
     if not mods:
         raise RuntimeError('Unable to fetch mod data from PoEDB, fallback, or trade API')
+
     conn.execute('DELETE FROM mods')
+    conn.execute('DELETE FROM mod_groups')
+    conn.execute('DELETE FROM tags')
+    conn.execute('DELETE FROM bases')
+
+    group_records: Dict[str, Dict[str, str]] = {}
+    tag_counts: Dict[str, int] = defaultdict(int)
+    base_records: Dict[str, Dict[str, str]] = {}
+
     for mod in mods:
+        tags = mod.get('tags') or []
+        spawn_weights_json = mod.get('spawn_weights_json') or json.dumps([])
+        tags_json = mod.get('tags_json') or json.dumps(tags)
+        group_id = mod.get('group_id')
+        if group_id and group_id not in group_records:
+            group_records[group_id] = {
+                'id': group_id,
+                'label': mod.get('group_label') or mod.get('full_text', ''),
+                'type': mod.get('type') or mod.get('generation_type') or '',
+            }
+        for tag in tags:
+            if isinstance(tag, str) and tag:
+                tag_counts[tag] += 1
+        base_key = mod.get('base') or mod.get('domain') or ''
+        if base_key and base_key not in base_records:
+            base_records[base_key] = {
+                'id': base_key,
+                'name': base_key,
+                'tags_json': json.dumps(tags),
+            }
         conn.execute(
             '''INSERT OR REPLACE INTO mods (id, base, type, domain, generation_type, full_text, group_id, spawn_weights_json, tags_json)
                VALUES (:id, :base, :type, :domain, :generation_type, :full_text, :group_id, :spawn_weights_json, :tags_json)''',
             {
                 'id': mod.get('id'),
-                'base': mod.get('base') or '',
+                'base': base_key,
                 'type': mod.get('type') or '',
                 'domain': mod.get('domain') or '',
                 'generation_type': mod.get('generation_type') or '',
                 'full_text': mod.get('full_text') or '',
-                'group_id': mod.get('group_id') or '',
-                'spawn_weights_json': mod.get('spawn_weights_json') or json.dumps([]),
-                'tags_json': mod.get('tags_json') or json.dumps(mod.get('tags', []))
-            }
+                'group_id': group_id or '',
+                'spawn_weights_json': spawn_weights_json,
+                'tags_json': tags_json,
+            },
         )
-    conn.commit()
+
+    for group in group_records.values():
+        conn.execute(
+            'INSERT OR REPLACE INTO mod_groups (id, label, type) VALUES (:id, :label, :type)',
+            group,
+        )
+
+    for tag, count in tag_counts.items():
+        conn.execute(
+            'INSERT OR REPLACE INTO tags (id, description) VALUES (?, ?)',
+            (tag, f'Occurrences: {count}'),
+        )
+
+    for base in base_records.values():
+        conn.execute(
+            'INSERT OR REPLACE INTO bases (id, name, tags_json) VALUES (:id, :name, :tags_json)',
+            base,
+        )
 
 
 def seed_passive_tree(conn: sqlite3.Connection) -> None:
     session = requests.Session()
     session.headers.update(HEADERS)
     try:
-        payload_bytes, _, _ = fetch_with_cache(session, PASSIVE_TREE_URL, 'passive_tree', timeout=90, sleep_seconds=1.0)
-        payload = json.loads(payload_bytes)
+        payload, _, _ = fetch_with_cache(session, PASSIVE_TREE_URL, 'passive_tree', timeout=90, sleep_seconds=1.0)
+        tree_json = payload.decode('utf-8')
     except requests.RequestException:
-        if not LOCAL_PASSIVE_TREE.exists():
+        if LOCAL_PASSIVE_TREE.exists():
+            tree_json = LOCAL_PASSIVE_TREE.read_text()
+        else:
             raise
-        payload = json.loads(LOCAL_PASSIVE_TREE.read_text())
-    version = payload.get('version') or payload.get('treeVersion') or 'unknown'
+    try:
+        parsed = json.loads(tree_json)
+        version = parsed.get('version') or parsed.get('treeVersion') or 'latest'
+    except json.JSONDecodeError:
+        version = 'latest'
     conn.execute('DELETE FROM passive_tree')
     conn.execute(
-        'INSERT INTO passive_tree (version, json) VALUES (?, ?)',
-        (version, json.dumps(payload))
+        'INSERT INTO passive_tree (id, version, json) VALUES (1, ?, ?)',
+        (version, tree_json),
     )
-    conn.commit()
 
 
 def main() -> None:
     conn = sqlite3.connect(DB_PATH)
     ensure_schema(conn)
-    seed_mods(conn)
-    seed_passive_tree(conn)
-    conn.close()
-    print('Seed complete ->', DB_PATH)
+    try:
+        seed_mods(conn)
+        seed_passive_tree(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    print('Seed complete')
 
 
 if __name__ == '__main__':
