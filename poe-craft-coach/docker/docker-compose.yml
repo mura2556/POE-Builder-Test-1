@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  mcp-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.mcp
+    working_dir: /work
+    command: ["bash", "-lc", "pnpm install && pnpm data:seed && pnpm data:prices && pnpm data:trade && pnpm mcp:http"]
+    volumes:
+      - ..:/work
+    ports:
+      - "8081:8081"

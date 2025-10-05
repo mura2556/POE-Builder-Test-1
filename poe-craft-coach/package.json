@@ -1,0 +1,14 @@
+{
+  "name": "poe-craft-coach",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@8.15.4",
+  "scripts": {
+    "mcp:http": "tsx apps/mcp-server/src/server.ts",
+    "rest:dev": "tsx apps/mcp-server/src/rest_shim.ts",
+    "data:seed": "python3 data/seed.py",
+    "data:prices": "python3 data/refresh_prices.py",
+    "data:trade": "python3 data/refresh_trade_stats.py",
+    "build": "tsup apps/mcp-server/src/server.ts --format cjs,esm --dts"
+  }
+}
