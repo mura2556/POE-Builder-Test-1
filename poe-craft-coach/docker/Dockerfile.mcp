@@ -1,0 +1,24 @@
+FROM node:20
+
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    fonts-dejavu \
+    build-essential \
+    python3 \
+    python3-pip \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+COPY package.json pnpm-workspace.yaml tsconfig.base.json /work/
+COPY pnpm-lock.yaml /work/pnpm-lock.yaml
+RUN npm install -g pnpm && pnpm install --frozen-lockfile || pnpm install
+
+COPY data/requirements.txt /work/data/requirements.txt
+RUN pip3 install --no-cache-dir -r /work/data/requirements.txt
+
+COPY . .
+
+EXPOSE 8081
+
+CMD ["pnpm", "mcp:http"]

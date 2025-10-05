@@ -1,0 +1,39 @@
+{
+  "name": "@poe-craft-coach/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.cjs",
+  "module": "dist/server.mjs",
+  "types": "dist/server.d.ts",
+  "scripts": {
+    "build": "tsup src/server.ts --format cjs,esm --dts",
+    "dev": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.1",
+    "better-sqlite3": "^9.4.0",
+    "bottleneck": "^2.19.5",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "fastify-sse-v2": "^4.2.1",
+    "nanoid": "^5.0.7",
+    "p-queue": "^7.3.4",
+    "p-retry": "^6.2.0",
+    "pino": "^9.5.0",
+    "sharp": "^0.33.4",
+    "tesseract.js": "^5.1.1",
+    "undici": "^6.19.8",
+    "zod": "^3.23.8",
+    "@fastify/cors": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "tsup": "^8.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.5",
+    "pino-pretty": "^11.0.0"
+  }
+}
